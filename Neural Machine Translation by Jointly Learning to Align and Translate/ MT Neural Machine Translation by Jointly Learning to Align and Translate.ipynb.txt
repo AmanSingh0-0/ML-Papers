@@ -1,0 +1,604 @@
+{
+  "nbformat": 4,
+  "nbformat_minor": 0,
+  "metadata": {
+    "colab": {
+      "name": "Trial.ipynb",
+      "provenance": []
+    },
+    "kernelspec": {
+      "name": "python3",
+      "display_name": "Python 3"
+    },
+    "language_info": {
+      "name": "python"
+    },
+    "accelerator": "GPU"
+  },
+  "cells": [
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "Z8r-MgIwdwo2"
+      },
+      "source": [
+        "import torch\n",
+        "import torch.nn as nn\n",
+        "import torch.optim as optim\n",
+        "\n",
+        "from torchtext.legacy.datasets import Multi30k\n",
+        "from torchtext.legacy.data import Field,BucketIterator\n",
+        "from torch.utils.tensorboard import SummaryWriter\n",
+        "\n",
+        "import numpy as np\n",
+        "import spacy\n",
+        "import random"
+      ],
+      "execution_count": 5,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "9C3vI-ZReIYA"
+      },
+      "source": [
+        "#!python -m spacy download de\n",
+        "#!python -m spacy download en\n",
+        "spacy_ger=spacy.load('de')\n",
+        "spacy_eng=spacy.load('en')"
+      ],
+      "execution_count": 6,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "WyCxE96FekRH"
+      },
+      "source": [
+        "def tokenize_in_german(text):\n",
+        "    return [tok.text for tok in spacy_ger.tokenizer(text)]\n",
+        "\n",
+        "\n",
+        "def tokenize_in_english(text):\n",
+        "    return [tok.text for tok in spacy_eng.tokenizer(text)]"
+      ],
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "Bi5a-CkgfJQq"
+      },
+      "source": [
+        "german = Field(tokenize=tokenize_in_german, lower=True, init_token=\"<sos>\", eos_token=\"<eos>\")\n",
+        "\n",
+        "english = Field(\n",
+        "    tokenize=tokenize_in_english, lower=True, init_token=\"<sos>\", eos_token=\"<eos>\"\n",
+        ")"
+      ],
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "6sbGxli5fqWh",
+        "outputId": "7efd7597-b840-4f76-97e4-3bd761811336"
+      },
+      "source": [
+        "train_data, valid_data, test_data = Multi30k.splits(exts = ('.de', '.en'), \n",
+        "                                                    fields = (german,english))"
+      ],
+      "execution_count": null,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "text": [
+            "downloading training.tar.gz\n"
+          ],
+          "name": "stdout"
+        },
+        {
+          "output_type": "stream",
+          "text": [
+            "training.tar.gz: 100%|██████████| 1.21M/1.21M [00:02<00:00, 472kB/s]\n"
+          ],
+          "name": "stderr"
+        },
+        {
+          "output_type": "stream",
+          "text": [
+            "downloading validation.tar.gz\n"
+          ],
+          "name": "stdout"
+        },
+        {
+          "output_type": "stream",
+          "text": [
+            "validation.tar.gz: 100%|██████████| 46.3k/46.3k [00:00<00:00, 89.9kB/s]\n"
+          ],
+          "name": "stderr"
+        },
+        {
+          "output_type": "stream",
+          "text": [
+            "downloading mmt_task1_test2016.tar.gz\n"
+          ],
+          "name": "stdout"
+        },
+        {
+          "output_type": "stream",
+          "text": [
+            "mmt_task1_test2016.tar.gz: 100%|██████████| 66.2k/66.2k [00:00<00:00, 86.0kB/s]\n"
+          ],
+          "name": "stderr"
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "Ah9hMRIBgGSt"
+      },
+      "source": [
+        "german.build_vocab(train_data,max_size=10000,min_freq=2)"
+      ],
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "HigXk4vXop5U"
+      },
+      "source": [
+        "english.build_vocab(train_data,max_size=10000,min_freq=2)"
+      ],
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "ht5cTsa4oxKa"
+      },
+      "source": [
+        "class Encoder(nn.Module):\n",
+        "    def __init__(self, input_size, embedding_size, hidden_size, num_layers, p):\n",
+        "        super(Encoder, self).__init__()\n",
+        "        self.dropout = nn.Dropout(p)\n",
+        "        self.hidden_size = hidden_size\n",
+        "        self.num_layers = num_layers\n",
+        "\n",
+        "        self.embedding = nn.Embedding(input_size, embedding_size)\n",
+        "        self.rnn = nn.LSTM(embedding_size, hidden_size, num_layers, dropout=p)\n",
+        "\n",
+        "    def forward(self, x):\n",
+        "\n",
+        "        embedding = self.dropout(self.embedding(x))\n",
+        "\n",
+        "        outputs, (hidden, cell) = self.rnn(embedding)\n",
+        "\n",
+        "        return hidden, cell\n",
+        "\n",
+        "\n",
+        "class Decoder(nn.Module):\n",
+        "    def __init__(\n",
+        "        self, input_size, embedding_size, hidden_size, output_size, num_layers, p\n",
+        "    ):\n",
+        "        super(Decoder, self).__init__()\n",
+        "        self.dropout = nn.Dropout(p)\n",
+        "        self.hidden_size = hidden_size\n",
+        "        self.num_layers = num_layers\n",
+        "\n",
+        "        self.embedding = nn.Embedding(input_size, embedding_size)\n",
+        "        self.rnn = nn.LSTM(embedding_size, hidden_size, num_layers, dropout=p)\n",
+        "        self.fc = nn.Linear(hidden_size, output_size)\n",
+        "\n",
+        "    def forward(self, x, hidden, cell):\n",
+        "        x = x.unsqueeze(0)\n",
+        "\n",
+        "        embedding = self.dropout(self.embedding(x))\n",
+        "        outputs, (hidden, cell) = self.rnn(embedding, (hidden, cell))\n",
+        "\n",
+        "        predictions = self.fc(outputs)\n",
+        "        predictions = predictions.squeeze(0)\n",
+        "\n",
+        "        return predictions, hidden, cell\n",
+        "\n",
+        "\n",
+        "class Seq2Seq(nn.Module):\n",
+        "    def __init__(self, encoder, decoder):\n",
+        "        super(Seq2Seq, self).__init__()\n",
+        "        self.encoder = encoder\n",
+        "        self.decoder = decoder\n",
+        "\n",
+        "    def forward(self, source, target, teacher_force_ratio=0.5):\n",
+        "        batch_size = source.shape[1]\n",
+        "        target_len = target.shape[0]\n",
+        "        target_vocab_size = len(english.vocab)\n",
+        "\n",
+        "        outputs = torch.zeros(target_len, batch_size, target_vocab_size).to(device)\n",
+        "\n",
+        "        hidden, cell = self.encoder(source)\n",
+        "\n",
+        "        x = target[0]\n",
+        "\n",
+        "        for t in range(1, target_len):\n",
+        "            output, hidden, cell = self.decoder(x, hidden, cell)\n",
+        "\n",
+        "            outputs[t] = output\n",
+        "            best_guess = output.argmax(1)\n",
+        "\n",
+        "            # With probability of teacher_force_ratio we take the actual next word\n",
+        "            # otherwise we take the word that the Decoder predicted it to be.\n",
+        "            # Teacher Forcing is used so that the model gets used to seeing\n",
+        "            # similar inputs at training and testing time, if teacher forcing is 1\n",
+        "            # then inputs at test time might be completely different than what the\n",
+        "            # network is used to. This was a long comment.\n",
+        "            x = target[t] if random.random() < teacher_force_ratio else best_guess\n",
+        "\n",
+        "        return outputs\n"
+      ],
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "b92T0qcowETV"
+      },
+      "source": [
+        "num_epochs=20\n",
+        "learn_rate=0.001\n",
+        "batch_size=64\n",
+        "\n",
+        "load_model=False\n",
+        "\n",
+        "device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')"
+      ],
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "LYSlx5fIwaAN"
+      },
+      "source": [
+        "input_size_encoder=len(german.vocab)\n",
+        "input_size_decoder=len(english.vocab)\n",
+        "\n",
+        "output_size=len(english.vocab)\n",
+        "\n",
+        "encoder_embedding_size=300\n",
+        "decoder_embedding_size=300\n",
+        "\n",
+        "hidden_size=1024\n",
+        "\n",
+        "num_layers=2\n",
+        "\n",
+        "enc_dropout=0.5\n",
+        "dec_dropout=0.5\n",
+        "\n",
+        "writer=SummaryWriter(f'runs/Loss_plot')\n",
+        "step=0"
+      ],
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "zYY4bYJ9w-F3"
+      },
+      "source": [
+        "train_iterator, valid_iterator, test_iterator = BucketIterator.splits(\n",
+        "    (train_data, valid_data, test_data),\n",
+        "    batch_size=batch_size,\n",
+        "    sort_within_batch=True,\n",
+        "    sort_key=lambda x: len(x.src),\n",
+        "    device=device,\n",
+        ")"
+      ],
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "ogwkZQtsxb7v"
+      },
+      "source": [
+        "encoder_net=Encoder(input_size_encoder,encoder_embedding_size,hidden_size,\n",
+        "                    num_layers,enc_dropout).to(device)\n",
+        "\n",
+        "decoder_net=Decoder(input_size_decoder,decoder_embedding_size,hidden_size,\n",
+        "                    output_size,num_layers,dec_dropout).to(device)"
+      ],
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "xsRR0ZYKx-Mp"
+      },
+      "source": [
+        "model=Seq2Seq(encoder_net,decoder_net).to(device)"
+      ],
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "AQSRtAHByDzD"
+      },
+      "source": [
+        "pad_idx=english.vocab.stoi['<pad>']\n",
+        "criterion=nn.CrossEntropyLoss(ignore_index=pad_idx)\n",
+        "optimizer=optim.Adam(model.parameters(),lr=learn_rate)"
+      ],
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "b6iOvwH4fcI6"
+      },
+      "source": [
+        "import torch\n",
+        "import spacy\n",
+        "from torchtext.data.metrics import bleu_score\n",
+        "import sys\n",
+        "\n",
+        "\n",
+        "def translate_sentence(model, sentence, german, english, device, max_length=50):\n",
+        "    # print(sentence)\n",
+        "\n",
+        "    spacy_ger = spacy.load(\"de\")\n",
+        "\n",
+        "    if type(sentence) == str:\n",
+        "        tokens = [token.text.lower() for token in spacy_ger(sentence)]\n",
+        "    else:\n",
+        "        tokens = [token.lower() for token in sentence]\n",
+        "\n",
+        "    # print(tokens)\n",
+        "    tokens.insert(0, german.init_token)\n",
+        "    tokens.append(german.eos_token)\n",
+        "\n",
+        "    text_to_indices = [german.vocab.stoi[token] for token in tokens]\n",
+        "\n",
+        "    sentence_tensor = torch.LongTensor(text_to_indices).unsqueeze(1).to(device)\n",
+        "\n",
+        "    with torch.no_grad():\n",
+        "        hidden, cell = model.encoder(sentence_tensor)\n",
+        "\n",
+        "    outputs = [english.vocab.stoi[\"<sos>\"]]\n",
+        "\n",
+        "    for _ in range(max_length):\n",
+        "        previous_word = torch.LongTensor([outputs[-1]]).to(device)\n",
+        "\n",
+        "        with torch.no_grad():\n",
+        "            output, hidden, cell = model.decoder(previous_word, hidden, cell)\n",
+        "            best_guess = output.argmax(1).item()\n",
+        "\n",
+        "        outputs.append(best_guess)\n",
+        "\n",
+        "        if output.argmax(1).item() == english.vocab.stoi[\"<eos>\"]:\n",
+        "            break\n",
+        "\n",
+        "    translated_sentence = [english.vocab.itos[idx] for idx in outputs]\n",
+        "\n",
+        "    return translated_sentence[1:]\n",
+        "\n",
+        "\n",
+        "def bleu(data, model, german, english, device):\n",
+        "    targets = []\n",
+        "    outputs = []\n",
+        "\n",
+        "    for example in data:\n",
+        "        src = vars(example)[\"src\"]\n",
+        "        trg = vars(example)[\"trg\"]\n",
+        "\n",
+        "        prediction = translate_sentence(model, src, german, english, device)\n",
+        "        prediction = prediction[:-1]  # remove <eos> token\n",
+        "\n",
+        "        targets.append([trg])\n",
+        "        outputs.append(prediction)\n",
+        "\n",
+        "    return bleu_score(outputs, targets)\n",
+        "\n",
+        "\n",
+        "def save_checkpoint(state, filename=\"my_checkpoint.pth.tar\"):\n",
+        "    print(\"=> Saving checkpoint\")\n",
+        "    torch.save(state, filename)\n",
+        "\n",
+        "\n",
+        "def load_checkpoint(checkpoint, model, optimizer):\n",
+        "    print(\"=> Loading checkpoint\")\n",
+        "    model.load_state_dict(checkpoint[\"state_dict\"])\n",
+        "    optimizer.load_state_dict(checkpoint[\"optimizer\"])"
+      ],
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "OvWhNxXi0PCi"
+      },
+      "source": [
+        "if load_model:\n",
+        "    load_checkpoint(torch.load(\"my_checkpoint.pth.tar\"), model, optimizer)\n",
+        "\n",
+        "\n",
+        "sentence = \"ein boot mit mehreren männern darauf wird von einem großen pferdegespann ans ufer gezogen.\"\n"
+      ],
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "uqnohZIy2wAw",
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "outputId": "f8961a21-018a-4214-8c4d-66d3b45441e7"
+      },
+      "source": [
+        "for epoch in range(num_epochs):\n",
+        "    print(f\"[Epoch {epoch} / {num_epochs}]\")\n",
+        "\n",
+        "    checkpoint = {\"state_dict\": model.state_dict(), \"optimizer\": optimizer.state_dict()}\n",
+        "    save_checkpoint(checkpoint)\n",
+        "\n",
+        "    model.eval()\n",
+        "\n",
+        "    translated_sentence = translate_sentence(\n",
+        "        model, sentence, german, english, device, max_length=50\n",
+        "    )\n",
+        "\n",
+        "    print(f\"Translated example sentence: \\n {translated_sentence}\")\n",
+        "\n",
+        "    model.train()\n",
+        "\n",
+        "    for batch_idx, batch in enumerate(train_iterator):\n",
+        "        inp_data = batch.src.to(device)\n",
+        "        target = batch.trg.to(device)\n",
+        "\n",
+        "        output = model(inp_data, target)\n",
+        "\n",
+        "        # Output is of shape (trg_len, batch_size, output_dim) but Cross Entropy Loss\n",
+        "        # doesn't take input in that form. For example if we have MNIST we want to have\n",
+        "        # output to be: (N, 10) and targets just (N). Here we can view it in a similar\n",
+        "        # way that we have output_words * batch_size that we want to send in into\n",
+        "        # our cost function, so we need to do some reshapin. While we're at it\n",
+        "        # Let's also remove the start token while we're at it\n",
+        "        output = output[1:].reshape(-1, output.shape[2])\n",
+        "        target = target[1:].reshape(-1)\n",
+        "\n",
+        "        optimizer.zero_grad()\n",
+        "        loss = criterion(output, target)\n",
+        "\n",
+        "        loss.backward()\n",
+        "        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1)\n",
+        "\n",
+        "        optimizer.step()\n",
+        "\n",
+        "        # Plotting\n",
+        "        writer.add_scalar(\"Training loss\", loss, global_step=step)\n",
+        "        step += 1"
+      ],
+      "execution_count": null,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "text": [
+            "[Epoch 0 / 20]\n",
+            "=> Saving checkpoint\n",
+            "Translated example sentence: \n",
+            " ['smile', 'crowded', 'multicolored', 'relax', 'crowded', 'female', 'pride', 'grab', 'automobile', 'automobile', 'act', 'big', 'mats', 'mats', 'chews', 'well', 'cargo', 'cargo', 'cargo', 'kayak', 'dish', 'dish', 'dish', 'brooms', 'whole', 'crammed', 'customers', 'customers', 'budweiser', 'budweiser', 'budweiser', 'sash', 'rack', 'rack', 'wooden', 'workout', 'gold', 'smile', 'hardwood', 'mats', 'crowded', 'mats', 'multicolored', 'mats', 'well', 'crowded', 'crouch', 'opens', 'multicolored', 'stringed']\n",
+            "[Epoch 1 / 20]\n",
+            "=> Saving checkpoint\n",
+            "Translated example sentence: \n",
+            " ['a', 'young', 'in', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', '.', '<eos>']\n",
+            "[Epoch 2 / 20]\n",
+            "=> Saving checkpoint\n",
+            "Translated example sentence: \n",
+            " ['a', 'bicyclist', 'player', 'with', 'a', '<unk>', 'is', 'is', 'the', '<unk>', 'of', 'a', '<unk>', '.', '<eos>']\n",
+            "[Epoch 3 / 20]\n",
+            "=> Saving checkpoint\n",
+            "Translated example sentence: \n",
+            " ['a', 'man', 'with', 'his', '<unk>', 'is', 'to', 'the', 'a', 'of', 'a', 'a', 'a', 'a', '.', '<eos>']\n",
+            "[Epoch 4 / 20]\n",
+            "=> Saving checkpoint\n",
+            "Translated example sentence: \n",
+            " ['a', 'worker', 'with', 'his', '<unk>', 'is', 'his', 'his', 'bike', 'in', 'a', 'a', 'of', 'a', '.', '.', '<eos>']\n",
+            "[Epoch 5 / 20]\n",
+            "=> Saving checkpoint\n",
+            "Translated example sentence: \n",
+            " ['a', 'worker', 'with', 'his', 'arms', 'is', 'being', 'pulled', 'by', 'a', 'large', 'large', 'large', 'large', '.', '.', '<eos>']\n",
+            "[Epoch 6 / 20]\n",
+            "=> Saving checkpoint\n",
+            "Translated example sentence: \n",
+            " ['a', 'worker', 'with', 'a', '<unk>', 'of', 'a', 'by', 'a', 'large', '<unk>', 'of', 'a', 'large', '<unk>', '.', '<eos>']\n",
+            "[Epoch 7 / 20]\n",
+            "=> Saving checkpoint\n",
+            "Translated example sentence: \n",
+            " ['a', 'police', 'officer', 'with', 'his', 'arms', 'pulled', 'by', 'a', 'large', 'building', '.', '<eos>']\n",
+            "[Epoch 8 / 20]\n",
+            "=> Saving checkpoint\n",
+            "Translated example sentence: \n",
+            " ['a', 'worker', 'with', 'a', 'hat', 'pulled', 'pulled', 'by', 'a', 'large', '<unk>', 'of', '<unk>', '.', '<eos>']\n",
+            "[Epoch 9 / 20]\n",
+            "=> Saving checkpoint\n",
+            "Translated example sentence: \n",
+            " ['a', 'cowboy', 'officer', 'with', 'his', '<unk>', 'pulled', 'by', 'a', 'large', 'building', 'surrounded', 'by', 'several', 'horses', '.', '<eos>']\n",
+            "[Epoch 10 / 20]\n",
+            "=> Saving checkpoint\n",
+            "Translated example sentence: \n",
+            " ['a', 'boat', 'with', 'many', 'men', 'being', 'pulled', 'by', 'a', 'large', 'bull', 'by', 'a', 'donkey', '.', '<eos>']\n",
+            "[Epoch 11 / 20]\n",
+            "=> Saving checkpoint\n",
+            "Translated example sentence: \n",
+            " ['a', 'boat', 'with', 'with', 'men', 'pulled', 'pulled', 'by', 'a', 'large', '<unk>', 'of', 'a', 'large', 'cable', '.', '<eos>']\n",
+            "[Epoch 12 / 20]\n",
+            "=> Saving checkpoint\n",
+            "Translated example sentence: \n",
+            " ['a', 'boat', 'with', 'his', 'men', 'pulled', 'pulled', 'by', 'a', 'boat', 'is', 'being', 'pulled', 'by', 'a', 'large', '.', '<eos>']\n",
+            "[Epoch 13 / 20]\n",
+            "=> Saving checkpoint\n",
+            "Translated example sentence: \n",
+            " ['a', 'boat', 'with', 'several', 'men', 'pulled', 'pulled', 'by', 'a', 'large', 'cable', 'by', 'a', '.', '<eos>']\n",
+            "[Epoch 14 / 20]\n",
+            "=> Saving checkpoint\n",
+            "Translated example sentence: \n",
+            " ['a', 'boat', 'with', 'several', 'men', 'pulled', 'pulled', 'by', 'a', 'large', 'boat', 'in', 'a', '.', '<eos>']\n",
+            "[Epoch 15 / 20]\n",
+            "=> Saving checkpoint\n",
+            "Translated example sentence: \n",
+            " ['a', 'boat', 'with', 'several', 'men', 'pulled', 'pulled', 'by', 'a', 'large', '<unk>', 'from', 'a', 'boat', '.', '<eos>']\n",
+            "[Epoch 16 / 20]\n",
+            "=> Saving checkpoint\n",
+            "Translated example sentence: \n",
+            " ['a', 'boat', 'boat', 'with', 'several', 'men', 'being', 'pulled', 'by', 'a', 'large', 'cable', 'by', 'a', 'large', '.', '<eos>']\n",
+            "[Epoch 17 / 20]\n",
+            "=> Saving checkpoint\n",
+            "Translated example sentence: \n",
+            " ['a', 'boat', 'with', 'several', 'men', 'is', 'pulled', 'by', 'a', 'boat', 'by', 'a', 'large', 'cable', 'of', 'horses', '.', '<eos>']\n",
+            "[Epoch 18 / 20]\n",
+            "=> Saving checkpoint\n",
+            "Translated example sentence: \n",
+            " ['a', 'boat', 'with', 'several', 'men', 'pulled', 'pulled', 'by', 'a', 'large', 'pulled', 'by', 'a', 'large', 'cable', '.', '<eos>']\n",
+            "[Epoch 19 / 20]\n",
+            "=> Saving checkpoint\n",
+            "Translated example sentence: \n",
+            " ['a', 'boat', 'with', 'several', 'men', 'being', 'pulled', 'by', 'a', 'large', 'bull', 'by', 'a', 'large', 'body', 'of', 'horses', '.', '<eos>']\n"
+          ],
+          "name": "stdout"
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "id": "EZDbNVjkfeOM"
+      },
+      "source": [
+        ""
+      ],
+      "execution_count": null,
+      "outputs": []
+    }
+  ]
+}
